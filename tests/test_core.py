@@ -156,7 +156,7 @@ Endpoint = 127.0.0.1:51820
         active = maximum = 0
         lock = threading.Lock()
 
-        def validate(path, *args):
+        def validate(result, *args):
             nonlocal active, maximum
             with lock:
                 active += 1
@@ -164,10 +164,13 @@ Endpoint = 127.0.0.1:51820
             time.sleep(0.01)
             with lock:
                 active -= 1
-            return Result(path.name)
+            return result
 
-        with patch("wgproxy.validation.validate_one", side_effect=validate):
-            results = validate_files([Path(str(i)) for i in range(17)], "unused", TestOptions(concurrency=2), "1.1.1.1")
+        with patch("wgproxy.validation.parse_wireguard", side_effect=lambda path: tunnel(path.name)), \
+                patch("wgproxy.validation.temporary_instance", side_effect=lambda *args: nullcontext()), \
+                patch("wgproxy.validation._check_tunnel", side_effect=validate):
+            results = validate_files([Path(str(i)) for i in range(17)], "unused",
+                                     TestOptions(concurrency=2, batch_size=5), "1.1.1.1")
         self.assertEqual(len(results), 17)
         self.assertEqual(maximum, 2)
 

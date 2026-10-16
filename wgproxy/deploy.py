@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import urllib.request
+from typing import Callable
 
 from .core import AppError, WireGuard, credentials, ipv4, make_config, private_write
 from .validation import check_config, check_ports, find_sing_box
@@ -213,7 +214,8 @@ WantedBy=multi-user.target
 """
 
 
-def deploy_config(binary: str, source: Path, swap: bool = False) -> None:
+def deploy_config(binary: str, source: Path, swap: bool = False,
+                  verify: Callable[[dict], None] | None = None) -> None:
     require_root()
     config = load_config(source)
     # Disable sing-box logs even if an existing config was supplied for deployment.
@@ -262,6 +264,9 @@ def deploy_config(binary: str, source: Path, swap: bool = False) -> None:
                 if time.monotonic() >= deadline:
                     raise AppError("The deployed proxy listeners did not become ready.")
                 time.sleep(0.1)
+            # The simple workflow includes reachability in the rollback boundary.
+            if verify is not None:
+                verify(config)
         except BaseException:
             # Restore a previously working deployment after bind/start failures.
             if changed:

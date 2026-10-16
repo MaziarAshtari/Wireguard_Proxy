@@ -121,6 +121,31 @@ class DeployTests(unittest.TestCase):
                                  [["systemctl", "stop", SERVICE], ["systemctl", "start", SERVICE]])
             self.assertFalse(installed.exists())
 
+    def test_health_failure_rolls_back_previous_deployment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source, installed, unit = directory / "source.json", directory / "installed.json", directory / "service.unit"
+            config = make_config([(tunnel(), 12000)], "127.0.0.1", "u", "p")
+            private_write(source, json.dumps(config))
+            private_write(installed, b"old config")
+            private_write(unit, b"old unit", 0o644)
+
+            def verify(candidate):
+                self.assertEqual(candidate, config)
+                raise AppError("Health check failed.")
+
+            with patch("wgproxy.deploy.require_root"), patch("wgproxy.deploy.CONFIG_PATH", installed), \
+                    patch("wgproxy.deploy.UNIT_PATH", unit), patch("wgproxy.deploy.check_config"), \
+                    patch("wgproxy.deploy.check_ports"), patch("wgproxy.deploy.socket.create_connection"), \
+                    patch("wgproxy.deploy.subprocess.run", return_value=SimpleNamespace(returncode=0)), \
+                    patch("wgproxy.deploy._run") as run:
+                with self.assertRaises(AppError):
+                    deploy_config("/usr/local/bin/sing-box", source, verify=verify)
+            self.assertEqual(installed.read_bytes(), b"old config")
+            self.assertEqual(installed.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(unit.read_bytes(), b"old unit")
+            self.assertEqual(run.call_args.args[0], ["systemctl", "start", SERVICE])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,7 +19,7 @@ from unittest.mock import patch
 from wgproxy.cli import main
 from wgproxy.core import WireGuard, make_config, private_write
 from wgproxy.network import Proxy, RequestError, request
-from wgproxy.validation import TestOptions, check_config, find_sing_box, free_port, health_check, temporary_instance, validate_one
+from wgproxy.validation import TestOptions, check_config, find_sing_box, free_port, health_check, temporary_instance, validate_files, validate_one
 
 BINARY = shutil.which("sing-box")
 
@@ -131,6 +131,26 @@ def peer_server(origin_port, dns_port=None):
 
 @unittest.skipUnless(BINARY, "sing-box is required for local integration tests")
 class IntegrationTests(unittest.TestCase):
+    def test_batch_validation_keeps_working_wrong_status_and_dead_tunnels_isolated(self):
+        from dataclasses import replace
+        with origin(204) as first_origin, origin(205) as second_origin:
+            with peer_server(first_origin) as first, peer_server(second_origin) as second:
+                dead = replace(first, filename="dead.conf", endpoint_port=free_port())
+                tunnels = [replace(first, filename="good.conf"), replace(second, filename="wrong.conf"), dead]
+                with tempfile.TemporaryDirectory() as directory:
+                    paths = []
+                    for wg in tunnels:
+                        path = Path(directory) / wg.filename
+                        private_write(path, f"[Interface]\nPrivateKey={wg.private_key}\nAddress={wg.addresses[0]}\n"
+                                      f"[Peer]\nPublicKey={wg.public_key}\nEndpoint={wg.endpoint}:{wg.endpoint_port}\n")
+                        paths.append(path)
+                    with patch("wgproxy.validation.exit_country", return_value="US"), \
+                            patch("wgproxy.validation.subprocess.Popen", wraps=subprocess.Popen) as spawn:
+                        results = validate_files(paths, BINARY, TestOptions(1, 1, 1, 3, "http://192.0.2.100/"), "1.1.1.1")
+                    self.assertEqual(sum(call.args[0][1] == "run" for call in spawn.call_args_list), 1)
+                    self.assertEqual([r.status for r in results], ["passed", "failed", "failed"])
+                    self.assertIsNotNone(results[0].latency_ms)
+
     def test_dns_queries_travel_through_each_own_tunnel(self):
         with origin(204) as first_origin, origin(205) as second_origin:
             with dns_server("192.0.2.10") as (first_dns, first_queries), dns_server("192.0.2.20") as (second_dns, second_queries):
